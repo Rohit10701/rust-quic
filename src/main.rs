@@ -102,6 +102,7 @@ async fn handle_connection(connecting: Incoming) {
         }
     }
 }
+
 fn sign_cert_for_quic() -> (String, String) {
     let subject_alt_names = vec!["localhost".to_string()];
 
