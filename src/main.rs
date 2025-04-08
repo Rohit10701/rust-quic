@@ -3,7 +3,7 @@ use std::io::Write;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
-use quinn::{Connecting, Connection, Endpoint};
+use quinn::{Connecting, Connection, Endpoint, Incoming};
 use rcgen::{generate_simple_self_signed, CertifiedKey};
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
@@ -11,6 +11,7 @@ use rustls::{ServerConfig, ServerConnection};
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 use tokio_rustls::{TlsAcceptor, server::TlsStream};
+use quinn::ReadExactError;
 
 #[path ="common/mod.rs"] mod common;
 
@@ -55,21 +56,52 @@ async fn setup_tls() {
     println!("QUIC server listening on {}", addr);
 
     while let Some(connecting) = endpoint.accept().await {
-        tokio::spawn(async move {
-            match connecting.await {
-                Ok(conn) => {
-                    println!("Accepted connection from {:?}", conn.remote_address());
-                }
-                Err(err) => {
-                    eprintln!("Failed to accept connection: {}", err);
-                }
-            }
-        });
+        tokio::spawn(handle_connection(connecting));
     }
 
 
 }
 
+async fn handle_connection(connecting: Incoming) {
+    match connecting.await {
+        Ok(connection) => {
+            println!("Connection established from: {}", connection.remote_address());
+            
+            while let Ok((mut send, mut recv)) = connection.accept_bi().await {
+                tokio::spawn(async move {
+                    let mut buffer = vec![0; 1024];
+                    
+                    match recv.read(&mut buffer).await {
+                        Ok(n) => {
+                            match n {
+                                Some(n) =>{ 
+                                    if n > 0 {
+                                    match String::from_utf8(buffer[..n].to_vec()) {
+                                        Ok(message) => {
+                                            println!("Received message: {}", message);
+                                            
+                                            let response = format!("Server received: {}", message);
+                                            if let Err(e) = send.write_all(response.as_bytes()).await {
+                                                eprintln!("Failed to send response: {}", e);
+                                            }
+                                        }
+                                        Err(e) => eprintln!("Invalid UTF-8: {}", e),
+                                    }
+                                }},
+                                None => println!("No data found")
+                            }
+                        }
+                        Ok(_) => println!("Connection closed"),
+                        Err(e) => eprintln!("Error reading from stream: {}", e),
+                    }
+                });
+            }
+        }
+        Err(err) => {
+            eprintln!("Failed to accept connection: {}", err);
+        }
+    }
+}
 fn sign_cert_for_quic() -> (String, String) {
     let subject_alt_names = vec!["localhost".to_string()];
 
